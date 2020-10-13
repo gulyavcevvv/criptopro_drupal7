@@ -1,0 +1,3 @@
+name = Сriptopro node
+description = This module can set two EDS signatures to the node
+core = 7.x

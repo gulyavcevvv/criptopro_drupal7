@@ -1,0 +1,90 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the criptopro_node module.
+ */
+
+/**
+ * Implements hook_uninstall().
+ */
+function criptopro_node_uninstall() {
+  $settings = db_query("SELECT name FROM {variable} WHERE name LIKE 'criptopro_%'");
+  foreach ($settings as $variable) {
+    variable_del($variable->name);
+  }
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function criptopro_node_requirements($phase) {
+  $requirements = array();
+
+  // Ensure translations don't break during installation.
+  $t = get_t();
+
+  $requirements['criptopro'] = array(
+    'title' => $t('criptopro library'),
+    'value' => 'install',
+  );
+  try {
+    new CPSignedData();
+  } catch (\Throwable $th) {
+    $requirements['criptopro']['description'] = $t('To use the module, you need to install the CryptoPro application.');
+    $requirements['criptopro']['value'] = 'not install';
+    $requirements['criptopro']['severity'] = REQUIREMENT_ERROR;
+  }
+
+  return $requirements;
+}
+
+/**
+ * Implements hook_schema().
+ */
+function criptopro_node_schema() {
+
+  $schema['criptopro_node'] = array(
+    'description' => 'The base table for criptopro_node module.',
+    'fields' => array(
+      'id' => array(
+        'description' => 'The primary identifier for a criptopro.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'nid' => array(
+        'description' => 'The primary identifier for a node.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'vid' => array(
+        'description' => 'The node version identifier.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'signature1' => array(
+        'description' => 'Signature author',
+        'type' => 'text',
+      ),
+      'uid' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+        'description' => "User uid for signature2.",
+      ),
+      'signature2' => array(
+        'description' => 'Signature 2',
+        'type' => 'text',
+      ),
+    ),
+    'primary key' => array('id'),
+    'indexes' => array(
+      'nid' => array('nid'),
+    ),
+  );
+
+  return $schema;
+}

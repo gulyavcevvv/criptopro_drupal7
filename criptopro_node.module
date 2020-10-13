@@ -1,0 +1,482 @@
+<?php
+
+/**
+ * @file
+ * Code for the MOPRA - подборы feature.
+ */
+
+define('CRIPTOPRO_NODE_TYPE_SAVE_NODE', 0);
+define('CRIPTOPRO_NODE_TYPE_SAVE_FIELDS', 1);
+
+/**
+ * Implements hook_help().
+ */
+function criptopro_node_help($path, $arg) {
+  global $user;
+
+  switch ($path) {
+    case 'admin/help#criptopro_node':
+      $output = '';
+      $output .= '<h3>' . t('About') . '</h3>';
+      $output .= '<p>' . t('The "criptopro_node" module allows users to sign and verify node signatures.') . '</p>';
+      $output .= '<h3>' . t('Content type settings') . '</h3>';
+      $output .= '<dl>';
+      $output .= '<dt>' . t('On the page for editing the content type, select the required parameters in the CryptoPore tab.The save type is preferable to use "fields", since the data of other modules will not be affected during signing and signature verification.') . '</dt>';
+      $output .= '<dt>' . t('In the control of displaying the type of material, we adjust the position of the new pseudo-fields (depending on the settings of two or three)') . '</dt>';
+      $output .= '</dl>';
+      $output .= '<h3>' . t('Uses') . '</h3>';
+      $output .= '<dl>';
+      $output .= '<dt>' . t('In the form of editing the material, depending on the settings and the user, the "Subscribe" button will appear.') . '</dt>';
+      $output .= '<dt>' . t('Go to this button in the form for choosing a personal certificate. CryptoPro EDS Browser plug-in must be installed.') . '</dt>';
+      $output .= '<dt>' . t('In the node view, check the signature properties.') . '</dt>';
+      $output .= '</dl>';
+      return $output;
+  }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function criptopro_node_menu() {
+
+  $items = array();
+  $items['node/%node/criptopro'] = array(
+    'title' => 'criptopro',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('criptopro_node_signature', 1),
+    'access callback' => 'criptopro_node_access',
+    'access arguments' => array('criptopro', 1),
+    'weight' => 1,
+    'type' => MENU_LOCAL_TASK,
+    'context' => MENU_CONTEXT_INLINE,
+    'file' => 'criptopro_node.pages.inc',
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function criptopro_node_permission() {
+  return array(
+    'administer criptopro' => array(
+      'title' => t('Administer the module'),
+      'description' => t('Perform maintenance tasks for the criptopro module.'),
+    ),
+  );
+}
+
+/**
+ * Determines whether the current user may perform the operation on the node.
+ *
+ * @param $op
+ *   The operation to be performed on the node. Possible values are:
+ *   - "criptopro"
+ * @param $node
+ *   The node object on which the operation is to be performed, or node type
+ *   (e.g. 'forum') for "create" operation.
+ * @param $account
+ *   Optional, a user object representing the user for whom the operation is to
+ *   be performed. Determines access for a user other than the current user.
+ *
+ * @return
+ *   TRUE if the operation may be performed, FALSE otherwise.
+ */
+function criptopro_node_access($op, $node, $account = NULL) {
+  $rights = &drupal_static(__FUNCTION__, array());
+
+  if (!$node || !in_array($op, array('criptopro'), TRUE)) {
+    // If there was no node to check against, or the $op was not one of the
+    // supported ones, we return access denied.
+    return FALSE;
+  }
+  // If node is node object, we return access denied.
+  if (!is_object($node)) {
+    return FALSE;
+  }
+
+  $type = $node->type;
+  $usecriptopro = variable_get('criptopro_use_' . $type, FALSE);
+  // If not used criptopro, we return access denied.
+  if (!$usecriptopro) {
+    return FALSE;
+  }
+  
+  // If no user object is supplied, the access check is for the current user.
+  if (empty($account)) {
+    $account = $GLOBALS['user'];
+  }
+
+  $cid = $node->nid;
+
+  // If we've already checked access for this node, user and op, return from
+  // cache.
+  if (isset($rights[$account->uid][$cid][$op])) {
+    return $rights[$account->uid][$cid][$op];
+  }
+
+  $criptopro_signature_author = variable_get('criptopro_signature_author_' . $type, FALSE);
+  if ($criptopro_signature_author) {
+    if ($node->uid == $account->uid) {
+      $rights[$account->uid][$cid][$op] = TRUE;
+      return TRUE;
+    }
+  }
+
+  $criptopro_signature2 = variable_get('criptopro_signature_2_' . $type, FALSE);
+  if ($criptopro_signature2) {
+    $role = variable_get('criptopro_signature_2_role_' . $type);
+    if (user_has_role($role, $account)) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function criptopro_node_theme($existing, $type, $theme, $path){
+  return array(
+    'criptopro_signature_form' => array(
+      'render element' => 'form',
+      'template' => 'criptopro-signature-form',
+      'path' => $path . '/templates',
+    ),
+    'criptopro_signature_info' => array(
+      'variables' => array(
+        'title' => NULL,
+        'info' => NULL,
+      ),
+      'template' => 'criptopro-signature-info',
+      'path' => $path . '/templates',
+    ),
+  );
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * Material type settings form.
+ */
+function criptopro_node_form_node_type_form_alter(&$form, &$form_state) {
+  if (user_access('administer criptopro')) {
+    $form['criptopro'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Criptopro'),
+      '#collapsible' => TRUE,
+      '#collapsed' => TRUE,
+      '#weight' => 99,
+      '#group' => 'additional_settings',
+    );
+
+    $form['criptopro']['criptopro_use'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Use criptopro'),
+      '#default_value' => variable_get('criptopro_use_' . $form['#node_type']->type, FALSE),
+    );
+
+    $form['criptopro']['criptopro_type_save'] = array(
+      '#type' => 'radios',
+      '#title' => t('Type save'),
+      '#default_value' => variable_get('criptopro_type_save_' . $form['#node_type']->type, CRIPTOPRO_NODE_TYPE_SAVE_FIELDS),
+      '#options' => array(
+        CRIPTOPRO_NODE_TYPE_SAVE_NODE => t('Node'),
+        CRIPTOPRO_NODE_TYPE_SAVE_FIELDS => t('Fields'),
+      ),
+      '#states' => array(
+        'visible' => array(
+          ':input[name="criptopro_use"]' => array(
+            'checked' => TRUE,
+          ),
+        ),
+      ),
+    );
+
+    $fields = field_info_instances('node', $form['#node_type']->type);
+    $options = array();
+    foreach ($fields as $key => $value) {
+      $options[$key] = $value['label'];
+    }
+
+    $form['criptopro']['criptopro_save_fields'] = array(
+      '#type' => 'checkboxes',
+      '#options' => $options,
+      '#title' => t('Select fields to sign'),
+      '#default_value' => variable_get('criptopro_save_fields_' . $form['#node_type']->type, array_keys($options)),
+      '#states' => array(
+        'visible' => array(
+          ':input[name="criptopro_use"]' => array(
+            'checked' => TRUE,
+          ),
+          ':input[name="criptopro_type_save"]' => array(
+            'value' => CRIPTOPRO_NODE_TYPE_SAVE_FIELDS,
+          ),
+        ),
+      ),
+    );
+
+    $form['criptopro']['criptopro_signature_author'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Use signature author'),
+      '#default_value' => variable_get('criptopro_signature_author_' . $form['#node_type']->type, FALSE),
+      '#states' => array(
+        'visible' => array(
+          ':input[name="criptopro_use"]' => array(
+            'checked' => TRUE,
+          ),
+        ),
+      ),
+    );
+
+    $form['criptopro']['criptopro_signature_2'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Use signature 2'),
+      '#default_value' => variable_get('criptopro_signature_2_' . $form['#node_type']->type, FALSE),
+      '#states' => array(
+        'visible' => array(
+          ':input[name="criptopro_use"]' => array(
+            'checked' => TRUE,
+          ),
+        ),
+      ),
+    );
+
+    $form['criptopro']['criptopro_signature_2_role'] = array(
+      '#type' => 'select',
+      '#title' => t('Role user for signature_2'),
+      '#options' => user_roles(),
+      '#default_value' => variable_get('criptopro_signature_2_role_' . $form['#node_type']->type),
+      '#states' => array(
+        'visible' => array(
+          ':input[name="criptopro_signature_2"]' => array(
+            'checked' => TRUE,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * Node edit form.
+ */
+function criptopro_node_form_node_form_alter(&$form, $form_state) {
+  $type = $form['#node']->type;
+  $usecriptopro = variable_get('criptopro_use_' . $type, FALSE);
+  if (!empty($form['nid']['#value']) && $usecriptopro) {
+    global $user;
+    $criptopro_signature_author = variable_get('criptopro_signature_author_' . $type, FALSE);
+    if (($form['#node']->uid == $user->uid) && $criptopro_signature_author) {
+      $form['actions']['criptopro_signature_author'] = array(
+        '#type' => 'submit',
+        '#value' => t('Subscribe'),
+        '#submit' => array('mopra_chat_criptopro_signature_submit'),
+      );
+    }
+
+    $criptopro_signature2 = variable_get('criptopro_signature_2_' . $type, FALSE);
+    if ($criptopro_signature2) {
+      $role = variable_get('criptopro_signature_2_role_' . $type);
+      if (user_has_role($role)) {
+        $form['actions']['criptopro_signature_author'] = array(
+          '#type' => 'submit',
+          '#value' => t('Subscribe'),
+          '#submit' => array('criptopro_node_node_form_alter_signature_submit'),
+        );
+      }
+    }
+  }
+
+}
+
+/**
+ * Form submission handler for node_form().
+ *
+ * @see criptopro_node_form_node_form_alter()
+ */
+function criptopro_node_node_form_alter_signature_submit($form, &$form_state) {
+  $destination = array();
+  if (isset($_GET['destination'])) {
+    $destination = drupal_get_destination();
+    unset($_GET['destination']);
+  }
+  $node = $form['#node'];
+  $form_state['redirect'] = array('node/' . $node->nid . '/criptopro', array('query' => $destination));
+}
+
+/**
+ * Implements hook_field_extra_fields().
+ */
+function criptopro_node_field_extra_fields() {
+  $extra_fields = array();
+
+  foreach(node_type_get_names() as $key => $value) {
+    if (variable_get('criptopro_signature_author_' . $key, FALSE)) {
+      $extra_fields['node'][$key]['display']['flagsignature'] = array(
+        'label' => t('Flag signature'),
+        'weight' => 1,
+      );
+      $extra_fields['node'][$key]['display']['signature1'] = array(
+        'label' => t('Signature author'),
+        'weight' => 2,
+      );
+      if (variable_get('criptopro_signature_2_' . $key, FALSE)) {
+        $extra_fields['node'][$key]['display']['signature2'] = array(
+          'label' => t('Signature2'),
+          'weight' => 3,
+        );
+      }
+    }
+  } 
+  return $extra_fields;
+}
+
+/**
+ * Implements hook_node_view().
+ */
+function criptopro_node_node_view($node, $view_mode, $langcode) {
+  $usecriptopro = variable_get('criptopro_use_' . $node->type, FALSE);
+  if ($view_mode == 'full' && $usecriptopro) {
+
+    // Загрузим дополнительные данные по подписи.
+    criptopro_node_get_criptopro($node);
+
+    $criptopro_signature_author = variable_get('criptopro_signature_author_' . $node->type, FALSE);
+    $criptopro_signature2 = variable_get('criptopro_signature_2_' . $node->type, FALSE);
+
+    $flagsignature = t('The document is not signed.');
+    if ($criptopro_signature_author && isset($node->criptopro['signature1'])) {
+      if ($criptopro_signature2) {
+        if (isset($node->criptopro['signature2'])) {
+          $flagsignature = t('The document is signed.');
+        }
+        else {
+          $flagsignature = t('The document is signed on side.');
+        }
+      }
+      else {
+        $flagsignature = t('The document is signed.');
+      }
+    }
+
+    if ($criptopro_signature_author && isset($node->criptopro['signature1'])) {
+      $info = criptopro_node_get_info_signature($node, $node->criptopro['signature1']);
+      if (isset($info['error'])) {
+        $flagsignature = t('Signature error.');
+      }
+      $node->content['signature1'] = array(
+        '#markup' => theme('criptopro_signature_info', array(
+          'title' => t('Signed by the author'),
+          'info' => $info,
+        )),
+      );
+    }
+    if ($criptopro_signature2 && isset($node->criptopro['signature2'])) {
+      $info = criptopro_node_get_info_signature($node, $node->criptopro['signature2']);
+      if (isset($info['error'])) {
+        $flagsignature = t('Signature error.');
+      }
+      $user2 = user_load($node->criptopro['signature_uid']);
+      $node->content['signature2'] = array(
+        '#markup' => theme('criptopro_signature_info', array(
+          'title' => t('Signed by the %user', array('%user' => $user2->name)),
+          'info' => $info,
+        )),
+      );
+    }
+
+    $node->content['signature'] = array(
+      '#markup' => $flagsignature,
+    );
+  }
+}
+
+/**
+ * Get criptopro by node().
+ *
+ * @see criptopro_node_node_view()
+ */
+function criptopro_node_get_criptopro($node) {
+    // Gather our extra data for each of these nodes.
+    $result = db_query('SELECT nid, signature1, signature2, uid FROM {criptopro_node} WHERE nid=:nid and vid=:vid', array(
+      ':nid' => $node->nid,
+      ':vid' => $node->vid,
+    ));
+
+    // Add our extra data to the node objects.
+    foreach ($result as $record) {
+      $node->criptopro['signature1'] = $record->signature1;
+      $node->criptopro['signature2'] = $record->signature2;
+      $node->criptopro['signature_uid'] = $record->uid;
+    }
+}
+
+/**
+ * The function returns information about the signature.
+ *
+ * @see criptopro_node_node_view()
+ */
+function criptopro_node_get_info_signature($node_orignal, $sm) {
+  $node = node_load($node_orignal->nid, $node_orignal->vid, TRUE);
+  $return = array();
+  $content = criptopro_node_cpsigneddata_get_content($node);
+  $flag = FALSE;
+  try{
+
+    $sd = new CPSignedData();
+    $sd->set_ContentEncoding(1);
+    $sd->set_Content($content);
+    $sd->VerifyCades($sm, CADES_BES, 1);
+
+    $flag = TRUE;
+  }
+  catch(Exception $e) {
+    $return['error'] = $e->getMessage();
+  }
+
+  if ($flag) {
+    try {
+      $signersObj = $sd->get_Signers();
+      $signerObj = $signersObj->get_Item(1);
+      $cert = $signerObj->get_Certificate();
+
+      $return['subject'] = $cert->get_SubjectName();
+      $return['issuer'] = $cert->get_IssuerName();
+      $return['from'] = $cert->get_ValidFromDate();
+      $return['till'] = $cert->get_ValidToDate();
+
+    }
+    catch (\Exception $e)
+    {
+      $return['error'] = $e;
+    }
+  }
+  return $return;
+}
+
+/**
+ * The function returns the content for the signature.
+ *
+ * @see criptopro_node_signature()
+ * @see criptopro_node_signature_validate()
+ * @see criptopro_node_testverify()
+ */
+function criptopro_node_cpsigneddata_get_content($node) {
+  $criptopro_type_save = variable_get('criptopro_type_save_' . $node->type, FALSE);
+
+  $content = array();
+  if ($criptopro_type_save == CRIPTOPRO_NODE_TYPE_SAVE_NODE) {
+    $content = $node;
+  }
+  else {
+    $criptopro_save_fields = variable_get('criptopro_save_fields_' . $node->type, array());
+    foreach ($criptopro_save_fields as $value) {
+      $content[] = field_get_items('node', $node, $value);
+    }
+  }
+
+  return base64_encode(serialize($content));
+}
